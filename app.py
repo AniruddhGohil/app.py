@@ -7,6 +7,9 @@ from urllib.parse import urljoin, urlparse
 
 TIMEOUT = 10
 
+# ---------------------------
+# Helper Functions
+# ---------------------------
 def is_internal_link(link, base_domain):
     parsed = urlparse(link)
     return parsed.netloc == "" or base_domain in parsed.netloc
@@ -32,6 +35,11 @@ def check_redirect(url):
     except:
         return None, None
 
+# ---------------------------
+# Streamlit App
+# ---------------------------
+st.set_page_config(page_title="Internal Link Redirect Checker", layout="wide")
+
 st.title("🔗 Internal Link Redirect Checker")
 st.write("Checks internal links for 301/302 redirects and suggests the final 200 URLs.")
 
@@ -56,12 +64,16 @@ if st.button("Start Crawling") and start_url:
             for link in links:
                 status, final_url = check_redirect(link)
                 if status in [301, 302]:
+                    try:
+                        final_status = requests.get(final_url, timeout=TIMEOUT).status_code
+                    except:
+                        final_status = None
                     results.append({
                         "Source Page": current_url,
                         "Old Link": link,
                         "Status": status,
                         "Final Destination": final_url,
-                        "Final Status": requests.get(final_url, timeout=TIMEOUT).status_code
+                        "Final Status": final_status
                     })
 
             for link in links:
@@ -79,3 +91,15 @@ if st.button("Start Crawling") and start_url:
         )
     else:
         st.info("No redirects found or no pages crawled.")
+
+# ---------------------------
+# Footer
+# ---------------------------
+st.markdown(
+    """
+    ---
+    **Created by [Aniruddh Gohil](https://github.com/AniruddhGohil) with ❤️**  
+    Follow me on [GitHub](https://github.com/AniruddhGohil) | [Twitter](https://x.com/AniruddhGohil_)
+    """,
+    unsafe_allow_html=True
+)

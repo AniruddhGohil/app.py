@@ -1,105 +1,106 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
-import tldextract
 from urllib.parse import urljoin, urlparse
+import pandas as pd
 
+# ---------------- CONFIG ----------------
 TIMEOUT = 10
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+}
 
-# ---------------------------
-# Helper Functions
-# ---------------------------
-def is_internal_link(link, base_domain):
-    parsed = urlparse(link)
-    return parsed.netloc == "" or base_domain in parsed.netloc
+# ---------------- HELPER FUNCTIONS ----------------
+def normalize_url(url):
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.rstrip("/")
 
-def get_links_from_page(url, base_domain):
-    try:
-        r = requests.get(url, timeout=TIMEOUT)
-        soup = BeautifulSoup(r.text, "html.parser")
-        links = []
-        for a in soup.find_all("a", href=True):
-            full_url = urljoin(url, a["href"])
-            if is_internal_link(full_url, base_domain):
-                links.append(full_url.split("#")[0])
-        return list(set(links))
-    except:
-        return []
+def is_internal_link(base_url, link):
+    return urlparse(link).netloc == urlparse(base_url).netloc or urlparse(link).netloc == ""
 
-def check_redirect(url):
-    try:
-        r = requests.get(url, timeout=TIMEOUT, allow_redirects=True)
-        final_url = r.url
-        return r.status_code, final_url
-    except:
-        return None, None
+def crawl_site(start_url, max_pages=20):
+    visited = set()
+    to_visit = [start_url]
+    redirects = []
 
-# ---------------------------
-# Streamlit App
-# ---------------------------
+    while to_visit and len(visited) < max_pages:
+        url = to_visit.pop(0)
+        if url in visited:
+            continue
+        visited.add(url)
+
+        st.write(f"🔍 Crawling: {url}")
+
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=False)
+        except requests.RequestException as e:
+            st.write(f"❌ Error fetching {url}: {e}")
+            continue
+
+        # Check for redirect
+        if 300 <= resp.status_code < 400:
+            location = resp.headers.get("Location")
+            if location:
+                final_url = urljoin(url, location)
+                try:
+                    final_resp = requests.get(final_url, headers=HEADERS, timeout=TIMEOUT)
+                    redirects.append({
+                        "Source URL": url,
+                        "Redirect URL": final_url,
+                        "Final Status": final_resp.status_code
+                    })
+                except requests.RequestException:
+                    redirects.append({
+                        "Source URL": url,
+                        "Redirect URL": final_url,
+                        "Final Status": "Error"
+                    })
+
+        # Parse links for crawling
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for link in soup.find_all("a", href=True):
+            full_link = urljoin(url, link["href"])
+            if is_internal_link(start_url, full_link) and full_link not in visited:
+                to_visit.append(full_link)
+
+    return redirects
+
+# ---------------- STREAMLIT APP ----------------
 st.set_page_config(page_title="Internal Link Redirect Checker", layout="wide")
 
 st.title("🔗 Internal Link Redirect Checker")
-st.write("Checks internal links for 301/302 redirects and suggests the final 200 URLs.")
+st.markdown("Check your site's internal links and replace redirects with direct URLs for better SEO.")
 
-start_url = st.text_input("Enter Website URL (e.g., https://example.com)")
-max_pages = st.slider("Max Pages to Crawl", 1, 200, 20)
+base_url = st.text_input("Enter your website URL", placeholder="https://example.com")
+max_pages = st.slider("Max pages to crawl", 5, 200, 20)
 
-if st.button("Start Crawling") and start_url:
-    base_domain = tldextract.extract(start_url).registered_domain
-    to_crawl = [start_url]
-    crawled = set()
-    results = []
+if st.button("Start Checking"):
+    if base_url:
+        base_url = normalize_url(base_url)
+        st.info(f"Starting crawl from: {base_url}")
+        data = crawl_site(base_url, max_pages=max_pages)
 
-    with st.spinner("Crawling in progress..."):
-        while to_crawl and len(crawled) < max_pages:
-            current_url = to_crawl.pop(0)
-            if current_url in crawled:
-                continue
-            crawled.add(current_url)
-
-            links = get_links_from_page(current_url, base_domain)
-
-            for link in links:
-                status, final_url = check_redirect(link)
-                if status in [301, 302]:
-                    try:
-                        final_status = requests.get(final_url, timeout=TIMEOUT).status_code
-                    except:
-                        final_status = None
-                    results.append({
-                        "Source Page": current_url,
-                        "Old Link": link,
-                        "Status": status,
-                        "Final Destination": final_url,
-                        "Final Status": final_status
-                    })
-
-            for link in links:
-                if link not in crawled and link not in to_crawl:
-                    to_crawl.append(link)
-
-    if results:
-        df = pd.DataFrame(results)
-        st.dataframe(df)
-        st.download_button(
-            label="Download CSV",
-            data=df.to_csv(index=False),
-            file_name="internal_link_redirect_report.csv",
-            mime="text/csv"
-        )
+        if data:
+            df = pd.DataFrame(data)
+            st.subheader("Found Redirects")
+            st.dataframe(df)
+            csv = df.to_csv(index=False)
+            st.download_button("Download CSV", csv, "redirects.csv", "text/csv")
+        else:
+            st.success("✅ No internal redirects found!")
     else:
-        st.info("No redirects found or no pages crawled.")
+        st.error("Please enter a website URL.")
 
-# ---------------------------
-# Footer
-# ---------------------------
+# ---------------- FOOTER ----------------
 st.markdown(
     """
-    ---
-    **Created by [Aniruddh Gohil](https://github.com/AniruddhGohil) with ❤️**  
-    Follow me on [GitHub](https://github.com/AniruddhGohil) | [Twitter](https://x.com/AniruddhGohil_)
+    <hr>
+    <p style="text-align:center;">
+    Created by <b>Aniruddh Gohil</b> with ❤️ <br>
+    <a href="https://github.com/AniruddhGohil" target="_blank">GitHub</a> |
+    <a href="https://x.com/AniruddhGohil_" target="_blank">Twitter</a>
+    </p>
     """,
     unsafe_allow_html=True
 )
